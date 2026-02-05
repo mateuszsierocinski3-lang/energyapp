@@ -3,130 +3,152 @@ import pandas as pd
 import requests
 import time
 import io
+import zipfile
 
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="EPREL Data Downloader", page_icon="⚡", layout="wide")
-
-# --- FUNKCJE POMOCNICZE ---
+st.set_page_config(page_title="EPREL Data & PDF Downloader", page_icon="⚡", layout="wide")
 
 def get_eprel_data(eprel_id, ean, api_key):
-    """
-    Pobiera dane produktu z API EPREL. 
-    Najpierw próbuje po ID EPREL, jeśli brak - próbuje po EAN/GTIN.
-    """
-    # 1. Określenie endpointu
+    """Pobiera dane produktu (JSON) z API EPREL."""
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    
+    # 1. Próba po ID EPREL
     if eprel_id and str(eprel_id).lower() != 'nan' and str(eprel_id).strip() != "":
         url = f"https://eprel.ec.europa.eu/api/product/{str(eprel_id).strip()}"
+    # 2. Próba po GTIN (EAN)
     elif ean and str(ean).lower() != 'nan' and str(ean).strip() != "":
-        url = f"https://eprel.ec.europa.eu/api/product/gtin/{str(ean).strip()}"
+        clean_ean = str(ean).split('.')[0].strip()
+        url = f"https://eprel.ec.europa.eu/api/product/gtin/{clean_ean}"
     else:
         return None
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json"
-    }
-    
+        
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            return response.json()
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            return data[0] if isinstance(data, list) else data
+    except:
         return None
-    except Exception:
+    return None
+
+def download_pdf(url, api_key):
+    """Pobiera surową zawartość pliku PDF z API."""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            return res.content
+    except:
         return None
+    return None
 
-def generate_links(eprel_id):
-    """Tworzy bezpośrednie linki do pobrania dokumentów PDF."""
-    if not eprel_id or str(eprel_id).lower() == 'nan':
-        return "Brak ID", "Brak ID"
-    
-    # Karta produktu (Product Fiche) - format PDF, język polski
-    fiche = f"https://eprel.ec.europa.eu/api/product/{eprel_id}/fiches?format=PDF&language=PL"
-    
-    # Etykieta energetyczna (Energy Label) - format PDF
-    label = f"https://eprel.ec.europa.eu/api/product/{eprel_id}/label?format=PDF"
-    
-    return fiche, label
+# --- UI ---
+st.title("⚡ EPREL PDF Downloader & Scraper")
+st.markdown("Pobiera klasę energetyczną oraz pliki PDF (Etykiety i Karty) do paczki ZIP.")
 
-# --- UI STREAMLIT ---
-st.title("⚡ EPREL Data Scraper")
-st.info("Aplikacja pobiera dane, etykiety PDF i karty produktu na podstawie kodu EPREL lub numeru EAN (GTIN).")
-
-# Pobieranie klucza z Secrets (Streamlit Cloud)
 try:
-    # Wykorzystuje zapisany klucz EPREL z sekcji Secrets
+    # Pobranie klucza z Streamlit Cloud Secrets
     API_KEY = st.secrets["EPREL_API_KEY"]
-except Exception:
-    st.error("Błąd: Nie znaleziono klucza 'EPREL_API_KEY' w Secrets!")
+except:
+    st.error("Błąd: Nie znaleziono 'EPREL_API_KEY' w Secrets aplikacji!")
     st.stop()
 
-uploaded_file = st.file_uploader("Załaduj plik Excel (wymagane kolumny: 'ean' oraz 'kod eprel')", type=["xlsx"])
+uploaded_file = st.file_uploader("Wgraj plik Excel (kolumny: 'ean' i 'kod eprel')", type=["xlsx"])
 
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
+    cols = {c.lower(): c for c in df_in.columns}
     
-    # Mapowanie kolumn bez względu na wielkość liter
-    cols_map = {c.lower(): c for c in df_in.columns}
-    
-    if 'ean' not in cols_map or 'kod eprel' not in cols_map:
-        st.error("Plik musi zawierać kolumny: 'ean' i 'kod eprel'")
+    if 'ean' not in cols or 'kod eprel' not in cols:
+        st.error("Plik musi zawierać kolumny: 'ean' i 'kod eprel'!")
     else:
-        if st.button("Pobierz dane z EPREL"):
-            final_data = []
-            progress_bar = st.progress(0)
+        if st.button("Uruchom pobieranie danych i plików PDF"):
+            results = []
+            pdf_files = [] # Lista krotek (nazwa_pliku, zawartość_binarna)
             
-            ean_col = cols_map['ean']
-            code_col = cols_map['kod eprel']
+            progress = st.progress(0)
+            status_text = st.empty()
+            
+            ean_col = cols['ean']
+            code_col = cols['kod eprel']
 
             for i, row in df_in.iterrows():
-                # Czyszczenie danych wejściowych
-                ean_val = str(row[ean_col]).split('.')[0].strip() if pd.notnull(row[ean_col]) else ""
-                eprel_id_val = str(row[code_col]).split('.')[0].strip() if pd.notnull(row[code_col]) else ""
+                e_id = row[code_col]
+                e_ean = str(row[ean_col]).split('.')[0].strip()
+                
+                status_text.text(f"Przetwarzanie ({i+1}/{len(df_in)}): EAN {e_ean}")
+                
+                data = get_eprel_data(e_id, e_ean, API_KEY)
                 
                 entry = {
-                    "EAN": ean_val,
-                    "Kod EPREL (Input)": eprel_id_val,
-                    "Klasa Energetyczna": "Nie znaleziono",
-                    "EPREL ID (Systemowy)": "N/A",
-                    "Link: Karta Produktu (PDF)": "N/A",
-                    "Link: Etykieta Energetyczna (PDF)": "N/A"
+                    "EAN": e_ean,
+                    "EPREL_ID": "Nie znaleziono",
+                    "Klasa": "N/A",
+                    "Status_PDF": "Brak"
                 }
-
-                # Pobieranie danych z odpowiedniego endpointu
-                data = get_eprel_data(eprel_id_val, ean_val, API_KEY)
                 
                 if data:
-                    # Wyciągnięcie właściwego ID (istotne przy wyszukiwaniu po EAN)
-                    real_id = data.get("registrationNumber")
-                    entry["EPREL ID (Systemowy)"] = real_id
-                    entry["Klasa Energetyczna"] = data.get("energyClass", "N/A")
+                    reg_num = data.get('registrationNumber')
+                    entry["EPREL_ID"] = reg_num
+                    entry["Klasa"] = data.get('energyClass', 'N/A')
                     
-                    # Generowanie linków PDF
-                    fiche_url, label_url = generate_links(real_id)
-                    entry["Link: Karta Produktu (PDF)"] = fiche_url
-                    entry["Link: Etykieta Energetyczna (PDF)"] = label_url
+                    # Definiowanie linków do plików
+                    fiche_url = f"https://eprel.ec.europa.eu/api/product/{reg_num}/fiches?format=PDF&language=PL"
+                    label_url = f"https://eprel.ec.europa.eu/api/product/{reg_num}/label?format=PDF"
+                    
+                    # Pobieranie ETYKIETY
+                    label_content = download_pdf(label_url, API_KEY)
+                    if label_content:
+                        pdf_files.append((f"ETYKIETA_{e_ean}_{reg_num}.pdf", label_content))
+                    
+                    # Pobieranie KARTY PRODUKTU
+                    fiche_content = download_pdf(fiche_url, API_KEY)
+                    if fiche_content:
+                        pdf_files.append((f"KARTA_{e_ean}_{reg_num}.pdf", fiche_content))
+                    
+                    entry["Status_PDF"] = "Pobrano" if label_content or fiche_content else "Błąd PDF"
                 
-                final_data.append(entry)
-                
-                # Aktualizacja paska postępu
-                progress_bar.progress((i + 1) / len(df_in))
-                time.sleep(0.05) # Szybki delay dla API
+                results.append(entry)
+                progress.progress((i + 1) / len(df_in))
+                time.sleep(0.1) # Ochrona przed rate-limitingiem API
 
-            st.session_state.results_df = pd.DataFrame(final_data)
-            st.success("Przetwarzanie zakończone!")
+            st.session_state.results_df = pd.DataFrame(results)
+            status_text.success("Zakończono pobieranie!")
 
+            # Tworzenie archiwum ZIP w pamięci
+            if pdf_files:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for filename, content in pdf_files:
+                        zip_file.writestr(filename, content)
+                st.session_state.zip_data = zip_buffer.getvalue()
+
+# --- SEKCJA POBIERANIA WYNIKÓW ---
 if 'results_df' in st.session_state:
-    st.subheader("Podgląd wyników")
+    st.divider()
+    st.subheader("Wyniki operacji")
     st.dataframe(st.session_state.results_df)
     
-    # Eksport do Excel z użyciem xlsxwriter (wymaga wpisu w requirements.txt)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        st.session_state.results_df.to_excel(writer, index=False)
+    col1, col2 = st.columns(2)
     
-    st.download_button(
-        label="📥 Pobierz gotowy raport Excel",
-        data=buf.getvalue(),
-        file_name="wyniki_eprel_pdf.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    with col1:
+        # Excel
+        out_buf = io.BytesIO()
+        with pd.ExcelWriter(out_buf, engine='xlsxwriter') as writer:
+            st.session_state.results_df.to_excel(writer, index=False)
+        st.download_button(
+            label="📥 Pobierz Raport Excel",
+            data=out_buf.getvalue(),
+            file_name="wyniki_eprel.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    with col2:
+        # ZIP
+        if 'zip_data' in st.session_state:
+            st.download_button(
+                label="📂 Pobierz Paczkę PDF (ZIP)",
+                data=st.session_state.zip_data,
+                file_name="pliki_eprel.zip",
+                mime="application/zip"
+            )
