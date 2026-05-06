@@ -8,33 +8,11 @@ import zipfile
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="EPREL Pro Link Generator", page_icon="⚡", layout="wide")
 
-# --- MAPOWANIE GRUP PRODUKTOWYCH NA SLUGI URL ---
-# Mapowanie na podstawie wartości 'productGroup' zwracanych przez API EPREL
-EPREL_URL_MAP = {
-    "SMARTPHONES_TABLETS": "smartphonestablets20231669",
-    "DISHWASHERS": "dishwashers2019",
-    "WASHING_MACHINES": "washingmachines2019",
-    "WASHER_DRYERS": "washerdriers2019",
-    "TUMBLE_DRYERS": "tumbledryers20232534",
-    "REFRIGERATING_APPLIANCES": "refrigeratingappliances2019",
-    "REFRIGERATING_APPLIANCES_DIRECT_SALES": "refrigeratingappliancesdirectsalesfunction",
-    "TYRES": "tyres",
-    "LIGHT_SOURCES": "lightsources",
-    "ELECTRONIC_DISPLAYS": "electronicdisplays",
-    "AIR_CONDITIONERS": "airconditioners",
-    "OVENS": "ovens",
-    "RANGE_HOODS": "rangehoods",
-    "LOCAL_SPACE_HEATERS": "localspaceheaters",
-    "PROFESSIONAL_REFRIGERATED_STORAGE_CABINETS": "professionalrefrigeratedstoragecabinets",
-    "RESIDENTIAL_VENTILATION_UNITS": "residentialventilationunits",
-    "SPACE_HEATERS": "spaceheaters",
-    "SPACE_HEATER_PACKAGES": "spaceheaterpackages",
-    "WATER_HEATERS": "waterheaters",
-    "WATER_HEATER_PACKAGES": "waterheaterpackages",
-    "HOT_WATER_STORAGE_TANKS": "hotwaterstoragetanks",
-    "SOLID_FUEL_BOILERS": "solidfuelboilers",
-    "SOLID_FUEL_BOILER_PACKAGES": "solidfuelboilerpackages"
-}
+# --- SPECJALNE KATEGORIE ---
+# API EPREL zwraca productGroup już jako slug URL gotowy do użycia w linkach
+# (np. "smartphonestablets20231669", "dishwashers2019", "lightsources")
+# Jedyne co trzeba rozpoznać osobno to LIGHT_SOURCES – mają inny sufiks PDF
+LIGHT_SOURCES_SLUG = "lightsources"
 
 # --- FUNKCJE POMOCNICZE ---
 
@@ -91,7 +69,7 @@ if uploaded_file:
                 res = {
                     "EAN": ean_val,
                     "Kod EPREL": eprel_id,
-                    "Kategoria (nowe pole)": "Nieznana",
+                    "Kategoria (slug EPREL)": "Nieznana",
                     "Klasa": "N/A",
                     "Bezpośredni Link PDF": "Błąd danych"
                 }
@@ -99,22 +77,19 @@ if uploaded_file:
                 if eprel_id:
                     data = get_eprel_full_data(eprel_id, API_KEY)
                     if data:
-                        # 1. Wyodrębnienie kategorii z API
-                        group_name = data.get("productGroup", "OTHER")
-                        res["Kategoria (nowe pole)"] = group_name
+                        # 1. API zwraca productGroup już jako slug URL (np. "smartphonestablets20231669")
+                        url_slug = data.get("productGroup", "other")
+                        res["Kategoria (slug EPREL)"] = url_slug
                         res["Klasa"] = data.get("energyClass", "N/A")
-                        
-                        # 2. Mapowanie kategorii na slug w URL[cite: 1]
-                        url_category = EPREL_URL_MAP.get(group_name, "other")
-                        
-                        # 3. Specyficzna obsługa końcówki dla LIGHT_SOURCES[cite: 1]
-                        if group_name == "LIGHT_SOURCES":
+
+                        # 2. Specjalny sufiks dla źródeł światła
+                        if url_slug == LIGHT_SOURCES_SLUG:
                             suffix = "_big_color.pdf"
                         else:
                             suffix = ".pdf"
-                        
-                        # 4. Tworzenie linku na podstawie pobranych danych
-                        res["Bezpośredni Link PDF"] = f"https://eprel.ec.europa.eu/labels/{url_category}/Label_{eprel_id}{suffix}"
+
+                        # 3. Tworzenie linku – slug z API trafia bezpośrednio do URL
+                        res["Bezpośredni Link PDF"] = f"https://eprel.ec.europa.eu/labels/{url_slug}/Label_{eprel_id}{suffix}"
 
                 final_results.append(res)
                 progress_bar.progress((i + 1) / len(df_in))
