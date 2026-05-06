@@ -6,11 +6,11 @@ import io
 import zipfile
 
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="EPREL Data & Link Generator", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="EPREL Pro Link Generator", page_icon="⚡", layout="wide")
 
-# --- MAPOWANIE KATEGORII NA FRAGMENTY URL ---
-# Mapowanie na podstawie nazw grup produktów zwracanych przez API EPREL
-CATEGORY_MAP = {
+# --- MAPOWANIE GRUP PRODUKTOWYCH NA SLUGI URL ---
+# Mapowanie na podstawie wartości 'productGroup' zwracanych przez API
+EPREL_URL_MAP = {
     "SMARTPHONES_TABLETS": "smartphonestablets20231669",
     "DISHWASHERS": "dishwashers2019",
     "WASHING_MACHINES": "washingmachines2019",
@@ -38,104 +38,107 @@ CATEGORY_MAP = {
 
 # --- FUNKCJE POMOCNICZE ---
 
-def get_eprel_data(eprel_id, ean, api_key):
-    """Pobiera dane produktu z API EPREL."""
-    if eprel_id and str(eprel_id).lower() != 'nan' and str(eprel_id).strip() != "":
-        url = f"https://eprel.ec.europa.eu/api/product/{eprel_id.strip()}"
-    elif ean and str(ean).lower() != 'nan' and str(ean).strip() != "":
-        url = f"https://eprel.ec.europa.eu/api/product/gtin/{ean.strip()}"
-    else:
+def get_eprel_full_data(eprel_id, api_key):
+    """Pobiera dane techniczne produktu, w tym grupę produktową."""
+    if not eprel_id or str(eprel_id).lower() == 'nan':
         return None
-
-    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    
+    url = f"https://eprel.ec.europa.eu/api/product/{str(eprel_id).strip()}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json"
+    }
+    
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        return response.json() if response.status_code == 200 else None
-    except:
+        if response.status_code == 200:
+            return response.json()
         return None
-
-def download_eprel_file(url, api_key):
-    """Pobiera plik binarny."""
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        response = requests.get(url, headers=headers, timeout=20)
-        return response.content if response.status_code == 200 else None
-    except:
+    except Exception:
         return None
 
 # --- UI STREAMLIT ---
-st.title("⚡ EPREL Pro: Generator Linków i Kategorii")
+st.title("⚡ EPREL: Generator Kategorii i Linków PDF")
+st.markdown("Skrypt automatycznie rozpoznaje kategorię produktu i generuje poprawny link do etykiety PDF.")
 
+# Pobieranie klucza z Secrets
 try:
     API_KEY = st.secrets["EPREL_API_KEY"]
 except Exception:
-    st.error("Błąd: Nie znaleziono klucza 'EPREL_API_KEY' w Secrets!")
+    st.error("Błąd: Brak 'EPREL_API_KEY' w Streamlit Secrets!")
     st.stop()
 
-uploaded_file = st.file_uploader("Załaduj plik Excel (wymagane: 'ean', 'kod eprel')", type=["xlsx"])
+uploaded_file = st.file_uploader("Wgraj plik Excel (kolumny: 'ean', 'kod eprel')", type=["xlsx"])
 
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
-    cols_lower = [str(c).lower() for c in df_in.columns]
+    cols_lower = {str(c).lower(): c for c in df_in.columns}
     
     if 'ean' not in cols_lower or 'kod eprel' not in cols_lower:
-        st.error("Plik musi zawierać kolumny: 'ean' i 'kod eprel'")
+        st.error("Plik musi zawierać kolumny 'ean' oraz 'kod eprel'!")
     else:
-        if st.button("Generuj dane i linki"):
-            final_data = []
+        if st.button("Generuj dane"):
+            final_results = []
             zip_buffer = io.BytesIO()
             progress_bar = st.progress(0)
             
-            ean_col = [c for c in df_in.columns if c.lower() == 'ean'][0]
-            code_col = [c for c in df_in.columns if c.lower() == 'kod eprel'][0]
+            ean_col = cols_lower['ean']
+            code_col = cols_lower['kod eprel']
 
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                 for i, row in df_in.iterrows():
                     ean_val = str(row[ean_col]).split('.')[0].strip() if pd.notnull(row[ean_col]) else f"brak_{i}"
-                    eprel_id_val = str(row[code_col]).split('.')[0].strip() if pd.notnull(row[code_col]) else ""
+                    eprel_id = str(row[code_col]).split('.')[0].strip() if pd.notnull(row[code_col]) else ""
                     
-                    entry = {
+                    # Domyślne wartości
+                    res = {
                         "EAN": ean_val,
-                        "Kod EPREL": eprel_id_val,
-                        "Kategoria EPREL": "Nieznana",
+                        "Kod EPREL": eprel_id,
+                        "Kategoria": "Nieznana",
                         "Klasa": "N/A",
-                        "Bezpośredni Link PDF": "Nie udało się wygenerować",
-                        "Publiczny Link": "Brak"
+                        "Wygenerowany Link PDF": "Błąd danych"
                     }
 
-                    data = get_eprel_data(eprel_id_val, ean_val, API_KEY)
-                    
-                    if data:
-                        real_id = data.get("registrationNumber") or eprel_id_val
-                        group_key = data.get("productGroup", "")
-                        entry["Kategoria EPREL"] = group_key
-                        entry["Klasa"] = data.get("energyClass", "N/A")
-                        entry["Publiczny Link"] = f"https://eprel.ec.europa.eu/screen/product/productModel/{real_id}"
-                        
-                        # --- GENEROWANIE LINKU PDF NA PODSTAWIE KATEGORII ---
-                        cat_slug = CATEGORY_MAP.get(group_key, "other")
-                        # Specjalny przypadek dla źródeł światła (często mają _big_color)
-                        suffix = "_big_color.pdf" if group_key == "LIGHT_SOURCES" else ".pdf"
-                        entry["Bezpośredni Link PDF"] = f"https://eprel.ec.europa.eu/labels/{cat_slug}/Label_{real_id}{suffix}"
+                    if eprel_id:
+                        data = get_eprel_full_data(eprel_id, API_KEY)
+                        if data:
+                            # 1. Wyodrębnienie kategorii z API
+                            group_name = data.get("productGroup", "OTHER")
+                            res["Kategoria"] = group_name
+                            res["Klasa"] = data.get("energyClass", "N/A")
+                            
+                            # 2. Mapowanie kategorii na slug w URL
+                            url_category = EPREL_URL_MAP.get(group_name, "other")
+                            
+                            # 3. Obsługa specyficznych końcówek (np. dla źródeł światła)
+                            suffix = "_big_color.pdf" if group_name == "LIGHT_SOURCES" else ".pdf"
+                            
+                            # 4. Składanie linku wg wzorca użytkownika
+                            pdf_link = f"https://eprel.ec.europa.eu/labels/{url_category}/Label_{eprel_id}{suffix}"
+                            res["Wygenerowany Link PDF"] = pdf_link
 
-                        # --- POBIERANIE DO ZIP (opcjonalnie) ---
-                        label_bits = download_eprel_file(f"https://eprel.ec.europa.eu/api/product/{real_id}/label?format=PNG", API_KEY)
-                        if label_bits:
-                            zip_file.writestr(f"etykiety/{ean_val}.png", label_bits)
-
-                    final_data.append(entry)
+                    final_results.append(res)
                     progress_bar.progress((i + 1) / len(df_in))
+                    time.sleep(0.02) # Szybkie przetwarzanie
 
-            st.session_state.results_df = pd.DataFrame(final_data)
-            st.session_state.zip_data = zip_buffer.getvalue()
-            st.success("Zakończono!")
+            # Przygotowanie wyników do wyświetlenia
+            df_out = pd.DataFrame(final_results)
+            st.session_state.results_df = df_out
+            st.success("Przetwarzanie zakończone!")
 
-# --- WYNIKI ---
+# --- WYŚWIETLANIE I POBIERANIE ---
 if 'results_df' in st.session_state:
-    st.dataframe(st.session_state.results_df)
+    st.subheader("Podgląd wyników")
+    st.dataframe(st.session_state.results_df, use_container_width=True)
     
+    # Export do Excela
     buf_excel = io.BytesIO()
     with pd.ExcelWriter(buf_excel, engine='xlsxwriter') as writer:
         st.session_state.results_df.to_excel(writer, index=False)
     
-    st.download_button("📥 Pobierz Excel z linkami i kategoriami", buf_excel.getvalue(), "eprel_linki.xlsx")
+    st.download_button(
+        label="📥 Pobierz Excel z kategoriami i linkami",
+        data=buf_excel.getvalue(),
+        file_name="wyniki_eprel_linki.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
