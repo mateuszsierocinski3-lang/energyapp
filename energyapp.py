@@ -71,7 +71,8 @@ if uploaded_file:
                     "Kod EPREL": eprel_id,
                     "Kategoria (slug EPREL)": "Nieznana",
                     "Klasa": "N/A",
-                    "Bezpośredni Link PDF": "Błąd danych"
+                    "Bezpośredni Link PDF": "Błąd danych",
+                    "Karta Produktowa PDF": "Błąd danych"
                 }
 
                 if eprel_id:
@@ -90,6 +91,9 @@ if uploaded_file:
 
                         # 3. Tworzenie linku – slug z API trafia bezpośrednio do URL
                         res["Bezpośredni Link PDF"] = f"https://eprel.ec.europa.eu/labels/{url_slug}/Label_{eprel_id}{suffix}"
+
+                        # 4. Karta produktowa (fiche) – ten sam slug, inna ścieżka
+                        res["Karta Produktowa PDF"] = f"https://eprel.ec.europa.eu/fiches/{url_slug}/Fiche_{eprel_id}_PL.pdf"
 
                 final_results.append(res)
                 progress_bar.progress((i + 1) / len(df_in))
