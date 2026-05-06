@@ -9,7 +9,7 @@ import zipfile
 st.set_page_config(page_title="EPREL Pro Link Generator", page_icon="⚡", layout="wide")
 
 # --- MAPOWANIE GRUP PRODUKTOWYCH NA SLUGI URL ---
-# Mapowanie na podstawie wartości 'productGroup' zwracanych przez API
+# Mapowanie na podstawie wartości 'productGroup' zwracanych przez API EPREL
 EPREL_URL_MAP = {
     "SMARTPHONES_TABLETS": "smartphonestablets20231669",
     "DISHWASHERS": "dishwashers2019",
@@ -39,7 +39,7 @@ EPREL_URL_MAP = {
 # --- FUNKCJE POMOCNICZE ---
 
 def get_eprel_full_data(eprel_id, api_key):
-    """Pobiera dane techniczne produktu, w tym grupę produktową."""
+    """Pobiera dane techniczne produktu z API."""
     if not eprel_id or str(eprel_id).lower() == 'nan':
         return None
     
@@ -58,8 +58,8 @@ def get_eprel_full_data(eprel_id, api_key):
         return None
 
 # --- UI STREAMLIT ---
-st.title("⚡ EPREL: Generator Kategorii i Linków PDF")
-st.markdown("Skrypt automatycznie rozpoznaje kategorię produktu i generuje poprawny link do etykiety PDF.")
+st.title("⚡ EPREL: Generator Kategorii i Linków Label PDF")
+st.markdown("Skrypt automatycznie rozpoznaje kategorię i generuje poprawny link PDF (w tym format big_color dla źródeł światła).")
 
 # Pobieranie klucza z Secrets
 try:
@@ -77,58 +77,56 @@ if uploaded_file:
     if 'ean' not in cols_lower or 'kod eprel' not in cols_lower:
         st.error("Plik musi zawierać kolumny 'ean' oraz 'kod eprel'!")
     else:
-        if st.button("Generuj dane"):
+        if st.button("Uruchom generowanie linków"):
             final_results = []
-            zip_buffer = io.BytesIO()
             progress_bar = st.progress(0)
             
             ean_col = cols_lower['ean']
             code_col = cols_lower['kod eprel']
 
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for i, row in df_in.iterrows():
-                    ean_val = str(row[ean_col]).split('.')[0].strip() if pd.notnull(row[ean_col]) else f"brak_{i}"
-                    eprel_id = str(row[code_col]).split('.')[0].strip() if pd.notnull(row[code_col]) else ""
-                    
-                    # Domyślne wartości
-                    res = {
-                        "EAN": ean_val,
-                        "Kod EPREL": eprel_id,
-                        "Kategoria": "Nieznana",
-                        "Klasa": "N/A",
-                        "Wygenerowany Link PDF": "Błąd danych"
-                    }
+            for i, row in df_in.iterrows():
+                ean_val = str(row[ean_col]).split('.')[0].strip() if pd.notnull(row[ean_col]) else f"brak_{i}"
+                eprel_id = str(row[code_col]).split('.')[0].strip() if pd.notnull(row[code_col]) else ""
+                
+                res = {
+                    "EAN": ean_val,
+                    "Kod EPREL": eprel_id,
+                    "Kategoria (nowe pole)": "Nieznana",
+                    "Klasa": "N/A",
+                    "Bezpośredni Link PDF": "Błąd danych"
+                }
 
-                    if eprel_id:
-                        data = get_eprel_full_data(eprel_id, API_KEY)
-                        if data:
-                            # 1. Wyodrębnienie kategorii z API
-                            group_name = data.get("productGroup", "OTHER")
-                            res["Kategoria"] = group_name
-                            res["Klasa"] = data.get("energyClass", "N/A")
-                            
-                            # 2. Mapowanie kategorii na slug w URL
-                            url_category = EPREL_URL_MAP.get(group_name, "other")
-                            
-                            # 3. Obsługa specyficznych końcówek (np. dla źródeł światła)
-                            suffix = "_big_color.pdf" if group_name == "LIGHT_SOURCES" else ".pdf"
-                            
-                            # 4. Składanie linku wg wzorca użytkownika
-                            pdf_link = f"https://eprel.ec.europa.eu/labels/{url_category}/Label_{eprel_id}{suffix}"
-                            res["Wygenerowany Link PDF"] = pdf_link
+                if eprel_id:
+                    data = get_eprel_full_data(eprel_id, API_KEY)
+                    if data:
+                        # 1. Wyodrębnienie kategorii z API
+                        group_name = data.get("productGroup", "OTHER")
+                        res["Kategoria (nowe pole)"] = group_name
+                        res["Klasa"] = data.get("energyClass", "N/A")
+                        
+                        # 2. Mapowanie kategorii na slug w URL[cite: 1]
+                        url_category = EPREL_URL_MAP.get(group_name, "other")
+                        
+                        # 3. Specyficzna obsługa końcówki dla LIGHT_SOURCES[cite: 1]
+                        if group_name == "LIGHT_SOURCES":
+                            suffix = "_big_color.pdf"
+                        else:
+                            suffix = ".pdf"
+                        
+                        # 4. Tworzenie linku na podstawie pobranych danych
+                        res["Bezpośredni Link PDF"] = f"https://eprel.ec.europa.eu/labels/{url_category}/Label_{eprel_id}{suffix}"
 
-                    final_results.append(res)
-                    progress_bar.progress((i + 1) / len(df_in))
-                    time.sleep(0.02) # Szybkie przetwarzanie
+                final_results.append(res)
+                progress_bar.progress((i + 1) / len(df_in))
+                time.sleep(0.01)
 
-            # Przygotowanie wyników do wyświetlenia
-            df_out = pd.DataFrame(final_results)
-            st.session_state.results_df = df_out
+            # Zapis wyników do sesji
+            st.session_state.results_df = pd.DataFrame(final_results)
             st.success("Przetwarzanie zakończone!")
 
 # --- WYŚWIETLANIE I POBIERANIE ---
 if 'results_df' in st.session_state:
-    st.subheader("Podgląd wyników")
+    st.subheader("Podgląd wygenerowanych danych")
     st.dataframe(st.session_state.results_df, use_container_width=True)
     
     # Export do Excela
@@ -137,8 +135,8 @@ if 'results_df' in st.session_state:
         st.session_state.results_df.to_excel(writer, index=False)
     
     st.download_button(
-        label="📥 Pobierz Excel z kategoriami i linkami",
+        label="📥 Pobierz raport Excel z linkami i kategoriami",
         data=buf_excel.getvalue(),
-        file_name="wyniki_eprel_linki.xlsx",
+        file_name="eprel_linki_pdf.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
